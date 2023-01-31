@@ -15,6 +15,5 @@ Hardware:
 - "ESP32 Dev Module" from the Arduino ESP32 device list
 - probably very very generic model
 
-*NOTE: 1-wire connectivity still untested, that is next on my list. Should work as the
-code is very generic. Perhaps default pin reallocation or something like that at most.
-This is next thing on the list to be confirmed.*
+*NOTE: 1-wire connectivity tested and works fine. There is an issue with WebServer.h though,
+rendering this unusable until something to replace ESP8266WebServer.h is found.
