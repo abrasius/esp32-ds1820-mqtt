@@ -21,18 +21,21 @@
 /* ------------------------------------------------------------------------------- */
 //      Name   GPIO    Function */
 #define PIN_D3   0  // Low on boot means enter FLASH mode
-#define PIN_D4   2  // TXD1
+#define PIN_D4   4  // 
 /* ------------------------------------------------------------------------------- */
 
 int LED = 2;
 
-#define LED_ON LOW    // Reverse these if you use eg. ESP12E, not NodeMCU dev module. 
+#define LED_ON LOW    // Reverse these if you use eg. ESP12E, no NodeMCU dev module. 
 #define LED_OFF HIGH
 
 #define ONE_WIRE_BUS PIN_D4
 #define APREQUEST PIN_D3
 #define APTIMEOUT 120000
 #define MAX_SENSORS 10
+/* kokeilua alla */
+/* kokeilua päällä */
+
 
 float sens[MAX_SENSORS];        // sensor values
 char sensname[MAX_SENSORS][24]; // sensor names
@@ -46,18 +49,18 @@ unsigned long portal_timer = 0;
 // Default hostname base. Last 3 octets of MAC are added as hex.
 // The hostname can be changed explicitly from the portal.
 // Maxlen in ESP8266WiFi class is 24
-char myhostname[24] = "esp32-ds1820-";
+char myhostname[128] = "esp32-ds1820-";
 
 // placeholder values
 char topicbase[256] = "dallastemp";
-char mqtt_user[64]  = "foo";
-char mqtt_pass[64]  = "bar";
+char mqtt_user[128]  = "foo";
+char mqtt_pass[128]  = "bar";
 char mqtt_host[64]  = "192.168.202.9";
 int  mqtt_port      = 1883;
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
-DeviceAddress sensor[8];
+DeviceAddress sensor[11];
 
 // ESP8266WiFiMulti WiFiMulti;
 WiFiClient wificlient;
@@ -70,8 +73,8 @@ File file;
 /* ------------------------------------------------------------------------------- */
 void loadWifis() {
     if (SPIFFS.exists("/known_wifis.txt")) {
-        char ssid[33];
-        char pass[65];
+        char ssid[128];
+        char pass[128];
 
         File file = SPIFFS.open("/known_wifis.txt");
         while (file.available()) {
@@ -91,24 +94,25 @@ void loadWifis() {
 /* ------------------------------------------------------------------------------- */
 /* get sensor index from hexstring like "10F78DBA000800D7" */
 int getSensorIndex(const char *hexString) {
-    char tmp[3];
-    char saddrstr[17];
-    memset(saddrstr, 0, sizeof(saddrstr));
+    char tmp[4];
+    char saddrstr[17]; // 17
+    
+    memset(saddrstr, '\0', sizeof(saddrstr));
     for (int i = 0; i < scount; i++) {
         for (uint8_t j = 0; j < 8; j++) {
-            sprintf(tmp, "%02X", sensor[i][j]);
+            sprintf(tmp, "%02X", sensor[i][j]); 
             tmp[2] = 0;
             strcat(saddrstr, tmp);
         }
-        if (strcmp(saddrstr, hexString) == 0) {
+        if (strcmp(saddrstr, hexString) == '\0') {
             return i;
         } else {
-            memset(saddrstr, 0, sizeof(saddrstr));
+            memset(saddrstr, '\0', sizeof(saddrstr));            
         }
     }
+    
     return -1; // no sensor found
 }
-/* ------------------------------------------------------------------------------- */
 void loadSavedSensors() {
     char sname[25];
     char saddrstr[17];
@@ -121,10 +125,12 @@ void loadSavedSensors() {
 
             file.readBytesUntil('\t', saddrstr, 17);
             file.readBytesUntil('\n', sname, 25);
+
             if (getSensorIndex(saddrstr) > -1) {
                 strcpy(sensname[getSensorIndex(saddrstr)], sname);
             }
         }
+        
         file.close();
     }
 
@@ -312,8 +318,7 @@ void startPortal() {
     WiFi.disconnect();
     delay(100);
 
-    /* WiFi.mode(WIFI_AP); */
-    /*  WiFi.softAP(); */
+    WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     WiFi.softAP("ESP32 DS1820 MQTT");
 
@@ -325,7 +330,6 @@ void startPortal() {
     server.on("/savesens", httpSaveSensors);
     server.on("/mqtt.html", httpMQTT);
     server.on("/savemqtt", httpSaveMQTT);
-
     server.on("/boot", httpBoot); 
 
     server.onNotFound([]() {
@@ -427,11 +431,11 @@ void httpSaveWifi() {
 
 void httpSensors() {
     String html;
-    char tablerows[1024];
-    char rowbuf[256];
-    char sname[25];
-    char saddrstr[17];
-    char tmp[4];
+    char tablerows[4096]; // 1024 was enough for five sensors, but not for 10. Gave it wide berth.
+    char rowbuf[256]; //256
+    char sname[25]; // 25
+    char saddrstr[17]; // 17
+    char tmp[4]; // 4
     int counter = 0;
     uint8_t unexistents = 0;
     DeviceAddress saddr;
@@ -443,7 +447,7 @@ void httpSensors() {
     file = SPIFFS.open("/sensors.html");
     html = file.readString();
     file.close();
-
+    
     for (int i = 0 ; i < scount; i++) {
         memset(saddrstr, '\0', sizeof(saddrstr));
         memset(sname, '\0', sizeof(sname));
@@ -462,6 +466,7 @@ void httpSensors() {
             counter++;
         }
     }
+        
     if (SPIFFS.exists("/known_sensors.txt")) {
         file = SPIFFS.open("/known_sensors.txt");
         while (file.available()) {
@@ -470,6 +475,7 @@ void httpSensors() {
 
             file.readBytesUntil('\t', saddrstr, 17);
             file.readBytesUntil('\n', sname, 25);
+            
             if (getSensorIndex(saddrstr) == -1) {
                 if (saddrstr[0] != 0) {
                     if (unexistents == 0) {
@@ -489,10 +495,8 @@ void httpSensors() {
         }
         file.close();
     }
-
     html.replace("###TABLEROWS###", tablerows);
     html.replace("###COUNTER###", String(counter));
-
     server.send(200, "text/html; charset=UTF-8", html);
 } 
 /* ------------------------------------------------------------------------------- */
@@ -501,7 +505,7 @@ void httpSaveSensors() {
     portal_timer = millis();
     String html;
 
-    file = SPIFFS.open("/known_sensors.txt");
+    file = SPIFFS.open("/known_sensors.txt", FILE_WRITE);
 
     for (int i = 0; i < server.arg("counter").toInt(); i++) {
         if (server.arg("sname" + String(i)).length() > 0) {
@@ -575,6 +579,7 @@ void httpStyle() {
 /* ------------------------------------------------------------------------------- */
 
 void httpBoot() {
+  
     portal_timer = millis();
     String html;
     File file = SPIFFS.open("/ok.html");
