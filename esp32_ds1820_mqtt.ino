@@ -33,8 +33,6 @@ int LED = 2;
 #define APREQUEST PIN_D3
 #define APTIMEOUT 120000
 #define MAX_SENSORS 10
-/* kokeilua alla */
-/* kokeilua päällä */
 
 
 float sens[MAX_SENSORS];        // sensor values
