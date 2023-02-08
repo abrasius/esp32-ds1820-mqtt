@@ -4,10 +4,16 @@ ESP32 port of ESP8266 DS1820 MQTT client by OH2MP
 
 (porting, and potential random typos and idiotisms by OH8TH)
 
+NEW: Now in functional state! Detects sensors, configuration works, connects to a WiFi,
+sends messages to the MQTT broker. What there is not to like?
+
 See https://github.com/oh2mp/esp8266_ds1820_mqtt what this is about.
 
 For ESP32, you have to upload the files using different tool, see this page for more info:
 https://randomnerdtutorials.com/install-esp32-filesystem-uploader-arduino-ide/
+
+Compiling options with Arduino IDE:
+- set both Arduino and Events to run on same core!
 
 Hardware I've been playing with:
 - Amazon sourced ESP32 that has text "ESP-WROOM-32" on the chip.
