@@ -20,3 +20,11 @@ Hardware I've been playing with:
 - "ESP32 Dev Module" from the Arduino ESP32 device list
 - probably very very generic model
 
+TODO:
+- support for a longer MQTT topic defaulting to "homeassistant/sensor"
+- Temperature reporting in regular Celsius values
+- upkeep the README along with actual changes
+
+MAYBE TODO:
+- support for corrective values to get sensor readings agree on what is zero degrees Celsius
+(if this can be done in HA, I won't bother)
