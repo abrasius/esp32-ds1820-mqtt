@@ -22,6 +22,7 @@ Hardware I've been playing with:
 
 3D printable stuff:
 https://www.thingiverse.com/thing:5876305 (ESP32 cases)
+
 https://www.thingiverse.com/thing:5878825 (DS1820 TO-92 holders for 20mm pipe)
 
 
