@@ -20,6 +20,11 @@ Hardware I've been playing with:
 - "ESP32 Dev Module" from the Arduino ESP32 device list
 - probably very very generic model
 
+3D printable stuff:
+https://www.thingiverse.com/thing:5876305 (ESP32 cases)
+https://www.thingiverse.com/thing:5878825 (DS1820 TO-92 holders for 20mm pipe)
+
+
 TODO:
 - support for a longer MQTT topic defaulting to "homeassistant/sensor"
 - Temperature reporting in regular Celsius values
