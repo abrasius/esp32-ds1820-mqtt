@@ -103,7 +103,7 @@ int getSensorIndex(const char *hexString) {
       tmp[2] = 0;
       strcat(saddrstr, tmp);
     }
-    if (strcmp(saddrstr, hexString) == '\0') {
+    if (strcmp(saddrstr, hexString) == 0) {
       return i;
     } else {
       memset(saddrstr, '\0', sizeof(saddrstr));
@@ -126,7 +126,8 @@ void loadSavedSensors() {
       file.readBytesUntil('\n', sname, 25);
 
       if (getSensorIndex(saddrstr) > -1) {
-        strcpy(sensname[getSensorIndex(saddrstr)], sname);
+        strncpy(sensname[getSensorIndex(saddrstr)], sname);
+        sensname[getSensorIndex(saddrstr)][23] = '\0';
       }
     }
 
@@ -248,7 +249,7 @@ void loop() {
           sens[i] = sensors.getTempC(sensor[i]);
           Serial.printf("sensor %d raw: 0x%X = %.4f°C\n", i, sensors.getTemp(sensor[i]), sens[i]);
         } else {
-          sens[i] = NULL;
+          sens[i] = NAN;
         }
       }
       sread = 1;
@@ -267,7 +268,7 @@ void loop() {
         //      TAG_DS1820 = 6
         if (mqttclient.connect(myhostname, mqtt_user, mqtt_pass)) {
           for (int i = 0; i < scount; i++) {
-            if (sens[i] != NULL && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
+            if (sens[i] != NAN && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
               // why does round() not work?
               if (sens[i] >= 0) {
                 sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 + 0.5));
@@ -377,8 +378,8 @@ void httpWifis() {
       memset(rowbuf, '\0', sizeof(rowbuf));
       memset(ssid, '\0', sizeof(ssid));
       memset(pass, '\0', sizeof(pass));
-      file.readBytesUntil('\t', ssid, 33);
-      file.readBytesUntil('\n', pass, 33);
+      file.readBytesUntil('\t', ssid, 32);
+      file.readBytesUntil('\n', pass, 63);
       sprintf(rowbuf, "<tr><td>SSID</td><td><input type=\"text\" name=\"ssid%d\" maxlength=\"32\" value=\"%s\"></td></tr>", counter, ssid);
       strcat(tablerows, rowbuf);
       sprintf(rowbuf, "<tr><td>PASS</td><td><input type=\"text\" name=\"pass%d\" maxlength=\"63\" value=\"%s\"></td></tr>", counter, pass);
