@@ -30,13 +30,13 @@
 
 /* ------------------------------------------------------------------------------- */
 //      Name   GPIO    Function */
-#define PIN_D3   0  // Low on boot means enter FLASH mode
-#define PIN_D4   4  // 
+#define PIN_D3 0  // Low on boot means enter FLASH mode
+#define PIN_D4 4  //
 /* ------------------------------------------------------------------------------- */
 
 int LED = 2;
 
-#define LED_ON LOW    // Reverse these if you use eg. ESP12E, no NodeMCU dev module. 
+#define LED_ON LOW  // Reverse these if you use eg. ESP12E, no NodeMCU dev module.
 #define LED_OFF HIGH
 
 #define ONE_WIRE_BUS PIN_D4
@@ -45,15 +45,14 @@ int LED = 2;
 #define MAX_SENSORS 10
 
 
-float sens[MAX_SENSORS];        // sensor values
-char sensname[MAX_SENSORS][24]; // sensor names
-int sread = 0;                  // Flag if sensors have been read on this iteration
-int onewire_wait = 1;           // if we are waiting for 1wire data
-unsigned long mytime = 0;       // Used for delaying, see loop function
-int scount = 0;                 // sensors amount
-int interval = 0;               // interval in minutes
+float sens[MAX_SENSORS];         // sensor values
+char sensname[MAX_SENSORS][24];  // sensor names
+int sread = 0;                   // Flag if sensors have been read on this iteration
+int onewire_wait = 1;            // if we are waiting for 1wire data
+unsigned long mytime = 0;        // Used for delaying, see loop function
+int scount = 0;                  // sensors amount
+int interval = 0;                // interval in minutes
 unsigned long portal_timer = 0;
-memset(sensname, 0, sizeof(sensname));
 
 // Default hostname base. Last 3 octets of MAC are added as hex.
 // The hostname can be changed explicitly from the portal.
@@ -62,10 +61,10 @@ char myhostname[128] = "esp32-ds1820-";
 
 // placeholder values
 char topicbase[256] = "dallastemp";
-char mqtt_user[128]  = "foo";
-char mqtt_pass[128]  = "bar";
-char mqtt_host[64]  = "192.168.202.9";
-int  mqtt_port      = 1883;
+char mqtt_user[128] = "foo";
+char mqtt_pass[128] = "bar";
+char mqtt_host[64] = "192.168.202.9";
+int mqtt_port = 1883;
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -76,7 +75,7 @@ WiFiClient wificlient;
 PubSubClient mqttclient(wificlient);
 
 WebServer server(80);
-IPAddress apIP(192, 168, 4, 1); // portal ip address
+IPAddress apIP(192, 168, 4, 1);  // portal ip address
 File file;
 
 /* ------------------------------------------------------------------------------- */
@@ -90,18 +89,18 @@ void loadWifis() {
       Serial.println("Failed to open known_wifis.txt");
       return;
     }
-    
+
     while (file.available()) {
       memset(ssid, 0, sizeof(ssid));
       memset(pass, 0, sizeof(pass));
-      
+
       // FIX: Add null-termination after readBytesUntil
       int ssid_len = file.readBytesUntil('\t', ssid, sizeof(ssid) - 1);
       ssid[ssid_len] = '\0';
-      
+
       int pass_len = file.readBytesUntil('\n', pass, sizeof(pass) - 1);
       pass[pass_len] = '\0';
-      
+
       // WiFi.softAP(ssid, pass);
       WiFi.begin(ssid, pass);
       Serial.printf("wifi loaded: %s / %s\n", ssid, pass);
@@ -125,7 +124,7 @@ int getSensorIndex(const char *hexString) {
   for (int i = 0; i < scount; i++) {
     char saddrstr[17];
     memset(saddrstr, '\0', sizeof(saddrstr));
-    
+
     for (uint8_t j = 0; j < 8; j++) {
       sprintf(tmp, "%02X", sensor[i][j]);
       tmp[2] = 0;
@@ -136,7 +135,7 @@ int getSensorIndex(const char *hexString) {
     }
   }
 
-  return -1; // no sensor found
+  return -1;  // no sensor found
 }
 
 void loadSavedSensors() {
@@ -149,7 +148,7 @@ void loadSavedSensors() {
       Serial.println("Failed to open known_sensors.txt");
       return;
     }
-    
+
     while (file.available()) {
       memset(sname, '\0', sizeof(sname));
       memset(saddrstr, '\0', sizeof(saddrstr));
@@ -157,7 +156,7 @@ void loadSavedSensors() {
       // FIX: Add null-termination after readBytesUntil
       int addr_len = file.readBytesUntil('\t', saddrstr, sizeof(saddrstr) - 1);
       saddrstr[addr_len] = '\0';
-      
+
       int name_len = file.readBytesUntil('\n', sname, sizeof(sname) - 1);
       sname[name_len] = '\0';
 
@@ -189,29 +188,29 @@ void loadMQTT() {
       Serial.println("Failed to open mqtt.txt");
       return;
     }
-    
+
     while (file.available()) {
       // FIX: Add null-termination after readBytesUntil
       int host_len = file.readBytesUntil(':', mqtt_host, sizeof(mqtt_host) - 1);
       mqtt_host[host_len] = '\0';
-      
+
       int port_len = file.readBytesUntil('\n', tmpstr, sizeof(tmpstr) - 1);
       tmpstr[port_len] = '\0';
       mqtt_port = atoi(tmpstr);
-      if (mqtt_port < 1 || mqtt_port > 65535) mqtt_port = 1883; // default
-      
+      if (mqtt_port < 1 || mqtt_port > 65535) mqtt_port = 1883;  // default
+
       int user_len = file.readBytesUntil(':', mqtt_user, sizeof(mqtt_user) - 1);
       mqtt_user[user_len] = '\0';
-      
+
       int pass_len = file.readBytesUntil('\n', mqtt_pass, sizeof(mqtt_pass) - 1);
       mqtt_pass[pass_len] = '\0';
-      
+
       int topic_len = file.readBytesUntil('\n', topicbase, sizeof(topicbase) - 1);
       topicbase[topic_len] = '\0';
-      
+
       int host_len2 = file.readBytesUntil('\n', myhostname, sizeof(myhostname) - 1);
       myhostname[host_len2] = '\0';
-      
+
       memset(tmpstr, 0, sizeof(tmpstr));
       int interval_len = file.readBytesUntil('\n', tmpstr, sizeof(tmpstr) - 1);
       tmpstr[interval_len] = '\0';
@@ -253,7 +252,7 @@ void setup() {
   if (scount > MAX_SENSORS) {
     scount = MAX_SENSORS;
   }
-  for (int i = 0 ; i < scount; i++) {
+  for (int i = 0; i < scount; i++) {
     if (sensors.getAddress(sensor[i], i)) {
       Serial.printf("Found sensor %d: ", i);
       for (uint8_t j = 0; j < 8; j++) {
@@ -273,7 +272,7 @@ void setup() {
     loadSavedSensors();
 
     WiFi.mode(WIFI_STA);
-  
+
     if (strlen(myhostname) > 0) WiFi.hostname(myhostname);
     mqttclient.setServer(mqtt_host, mqtt_port);
   } else {
@@ -317,7 +316,7 @@ void loop() {
 
     if (sread == 1) {
       // send MQTT
-      WiFi.mode(WIFI_STA);      
+      WiFi.mode(WIFI_STA);
 
       sread = 0;
       if (WiFi.status() == WL_CONNECTED) {
@@ -354,7 +353,7 @@ void loop() {
         Serial.printf("Failed to connect WiFi, status=%d\n", WiFi.status());
       }
     }
-  } else if (portal_timer > 0) { // portal mode
+  } else if (portal_timer > 0) {  // portal mode
     server.handleClient();
 
     // blink onboard leds if we are in portal mode
@@ -416,7 +415,7 @@ void httpRoot() {
     server.send(500, "text/plain", "Error: index.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
@@ -441,7 +440,7 @@ void httpWifis() {
     server.send(500, "text/plain", "Error: wifis.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
@@ -452,29 +451,29 @@ void httpWifis() {
       server.send(500, "text/plain", "Error: cannot read wifis");
       return;
     }
-    
+
     while (file.available()) {
       memset(rowbuf, '\0', sizeof(rowbuf));
       memset(ssid, '\0', sizeof(ssid));
       memset(pass, '\0', sizeof(pass));
-      
+
       // FIX: Add null-termination
       int ssid_len = file.readBytesUntil('\t', ssid, sizeof(ssid) - 1);
       ssid[ssid_len] = '\0';
-      
+
       int pass_len = file.readBytesUntil('\n', pass, sizeof(pass) - 1);
       pass[pass_len] = '\0';
-      
+
       sprintf(rowbuf, "<tr><td>SSID</td><td><input type=\"text\" name=\"ssid%d\" maxlength=\"32\" value=\"%s\"></td></tr>", counter, ssid);
       tablerows += rowbuf;
-      
+
       sprintf(rowbuf, "<tr><td>PASS</td><td><input type=\"text\" name=\"pass%d\" maxlength=\"63\" value=\"%s\"></td></tr>", counter, pass);
       tablerows += rowbuf;
       counter++;
     }
     file.close();
   }
-  
+
   html.replace("###TABLEROWS###", tablerows);
   html.replace("###COUNTER###", String(counter));
 
@@ -521,7 +520,7 @@ void httpSaveWifi() {
     server.send(500, "text/plain", "Error: ok.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
@@ -550,21 +549,21 @@ void httpSensors() {
     server.send(500, "text/plain", "Error: sensors.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
-  for (int i = 0 ; i < scount; i++) {
+  for (int i = 0; i < scount; i++) {
     memset(saddrstr, '\0', sizeof(saddrstr));
     memset(sname, '\0', sizeof(sname));
     memset(tmp, '\0', sizeof(tmp));
-    
+
     for (uint8_t j = 0; j < 8; j++) {
       sprintf(tmp, "%02X", sensor[i][j]);
-      strcat(saddrstr, tmp); 
+      strcat(saddrstr, tmp);
       tmp[2] = 0;
       sprintf(tmp, "%02X:", sensor[i][j]);
-      strcat(sname, tmp); 
+      strcat(sname, tmp);
       tmp[3] = 0;
     }
     if (saddrstr[0] != 0) {
@@ -584,7 +583,7 @@ void httpSensors() {
       server.send(500, "text/plain", "Error: cannot read sensors");
       return;
     }
-    
+
     while (file.available()) {
       memset(sname, '\0', sizeof(sname));
       memset(saddrstr, '\0', sizeof(saddrstr));
@@ -592,7 +591,7 @@ void httpSensors() {
       // FIX: Add null-termination
       int addr_len = file.readBytesUntil('\t', saddrstr, sizeof(saddrstr) - 1);
       saddrstr[addr_len] = '\0';
-      
+
       int name_len = file.readBytesUntil('\n', sname, sizeof(sname) - 1);
       sname[name_len] = '\0';
 
@@ -617,7 +616,7 @@ void httpSensors() {
     }
     file.close();
   }
-  
+
   html.replace("###TABLEROWS###", tablerows);
   html.replace("###COUNTER###", String(counter));
   server.send(200, "text/html; charset=UTF-8", html);
@@ -645,7 +644,7 @@ void httpSaveSensors() {
     }
   }
   file.close();
-  loadSavedSensors(); // reread
+  loadSavedSensors();  // reread
 
   file = SPIFFS.open("/ok.html");
   if (!file) {
@@ -653,7 +652,7 @@ void httpSaveSensors() {
     server.send(500, "text/plain", "Error: ok.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
@@ -673,7 +672,7 @@ void httpMQTT() {
     server.send(500, "text/plain", "Error: mqtt.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
@@ -697,15 +696,15 @@ void httpSaveMQTT() {
     server.send(500, "text/plain", "Error: cannot save MQTT config");
     return;
   }
-  
+
   file.printf("%s\n", server.arg("hostport").c_str());
   file.printf("%s\n", server.arg("userpass").c_str());
   file.printf("%s\n", server.arg("topicbase").c_str());
   file.printf("%s\n", server.arg("myhostname").c_str());
   file.printf("%s\n", server.arg("interval").c_str());
   file.close();
-  
-  loadMQTT(); // reread
+
+  loadMQTT();  // reread
 
   file = SPIFFS.open("/ok.html");
   if (!file) {
@@ -713,7 +712,7 @@ void httpSaveMQTT() {
     server.send(500, "text/plain", "Error: ok.html not found");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
@@ -733,7 +732,7 @@ void httpStyle() {
     server.send(500, "text/css", "/* Error: style.css not found */");
     return;
   }
-  
+
   css = file.readString();
   file.close();
   server.send(200, "text/css", css);
@@ -744,14 +743,14 @@ void httpStyle() {
 void httpBoot() {
   portal_timer = millis();
   String html;
-  
+
   File file = SPIFFS.open("/ok.html");
   if (!file) {
     Serial.println("Failed to open ok.html");
     server.send(500, "text/html; charset=UTF-8", "<html><body>Error: ok.html not found</body></html>");
     return;
   }
-  
+
   html = file.readString();
   file.close();
 
