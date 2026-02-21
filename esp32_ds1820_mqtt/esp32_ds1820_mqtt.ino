@@ -4,6 +4,15 @@
     See https://github.com/oh2mp/
 
     All kind of butchery from porting to esp32 by oh8th
+    
+    FIXES APPLIED:
+    - Buffer overflow protection in getSensorIndex()
+    - NaN comparison using isnan()
+    - Null-termination after file reads
+    - Length checking before buffer access
+    - Proper array initialization
+    - Safe index bounds checking
+    - Dynamic string handling for large data
 */
 
 #include <OneWire.h>
@@ -15,6 +24,7 @@
 #include <PubSubClient.h>
 #include <FS.h>
 #include <SPIFFS.h>
+#include <cmath>
 
 #define FORMAT_SPIFFS_IF_FAILED true
 
@@ -75,11 +85,22 @@ void loadWifis() {
     char pass[128];
 
     File file = SPIFFS.open("/known_wifis.txt");
+    if (!file) {
+      Serial.println("Failed to open known_wifis.txt");
+      return;
+    }
+    
     while (file.available()) {
       memset(ssid, 0, sizeof(ssid));
       memset(pass, 0, sizeof(pass));
-      file.readBytesUntil('\t', ssid, 32);
-      file.readBytesUntil('\n', pass, 64);
+      
+      // FIX: Add null-termination after readBytesUntil
+      int ssid_len = file.readBytesUntil('\t', ssid, sizeof(ssid) - 1);
+      ssid[ssid_len] = '\0';
+      
+      int pass_len = file.readBytesUntil('\n', pass, sizeof(pass) - 1);
+      pass[pass_len] = '\0';
+      
       // WiFi.softAP(ssid, pass);
       WiFi.begin(ssid, pass);
       Serial.printf("wifi loaded: %s / %s\n", ssid, pass);
@@ -92,12 +113,18 @@ void loadWifis() {
 
 /* ------------------------------------------------------------------------------- */
 /* get sensor index from hexstring like "10F78DBA000800D7" */
+// FIX: Prevent buffer overflow by declaring saddrstr inside loop
 int getSensorIndex(const char *hexString) {
   char tmp[4];
-  char saddrstr[17]; // 17
 
-  memset(saddrstr, '\0', sizeof(saddrstr));
+  if (!hexString || scount <= 0) {
+    return -1;
+  }
+
   for (int i = 0; i < scount; i++) {
+    char saddrstr[17];
+    memset(saddrstr, '\0', sizeof(saddrstr));
+    
     for (uint8_t j = 0; j < 8; j++) {
       sprintf(tmp, "%02X", sensor[i][j]);
       tmp[2] = 0;
@@ -105,36 +132,46 @@ int getSensorIndex(const char *hexString) {
     }
     if (strcmp(saddrstr, hexString) == 0) {
       return i;
-    } else {
-      memset(saddrstr, '\0', sizeof(saddrstr));
     }
   }
 
   return -1; // no sensor found
 }
+
 void loadSavedSensors() {
   char sname[25];
   char saddrstr[17];
 
   if (SPIFFS.exists("/known_sensors.txt")) {
     file = SPIFFS.open("/known_sensors.txt");
+    if (!file) {
+      Serial.println("Failed to open known_sensors.txt");
+      return;
+    }
+    
     while (file.available()) {
       memset(sname, '\0', sizeof(sname));
       memset(saddrstr, '\0', sizeof(saddrstr));
 
-      file.readBytesUntil('\t', saddrstr, 17);
-      file.readBytesUntil('\n', sname, 25);
+      // FIX: Add null-termination after readBytesUntil
+      int addr_len = file.readBytesUntil('\t', saddrstr, sizeof(saddrstr) - 1);
+      saddrstr[addr_len] = '\0';
+      
+      int name_len = file.readBytesUntil('\n', sname, sizeof(sname) - 1);
+      sname[name_len] = '\0';
 
-      if (getSensorIndex(saddrstr) > -1) {
-        strncpy(sensname[getSensorIndex(saddrstr)], sname);
-        sensname[getSensorIndex(saddrstr)][23] = '\0';
+      // FIX: Store result of getSensorIndex once and check bounds
+      int idx = getSensorIndex(saddrstr);
+      if (idx >= 0 && idx < MAX_SENSORS) {
+        strncpy(sensname[idx], sname, sizeof(sensname[idx]) - 1);
+        sensname[idx][sizeof(sensname[idx]) - 1] = '\0';
       }
     }
 
     file.close();
   }
-
 }
+
 /* ------------------------------------------------------------------------------- */
 void loadMQTT() {
   if (SPIFFS.exists("/mqtt.txt")) {
@@ -147,17 +184,36 @@ void loadMQTT() {
     memset(myhostname, 0, sizeof(myhostname));
 
     File file = SPIFFS.open("/mqtt.txt", "r");
+    if (!file) {
+      Serial.println("Failed to open mqtt.txt");
+      return;
+    }
+    
     while (file.available()) {
-      file.readBytesUntil(':', mqtt_host, sizeof(mqtt_host));
-      file.readBytesUntil('\n', tmpstr, sizeof(tmpstr));
+      // FIX: Add null-termination after readBytesUntil
+      int host_len = file.readBytesUntil(':', mqtt_host, sizeof(mqtt_host) - 1);
+      mqtt_host[host_len] = '\0';
+      
+      int port_len = file.readBytesUntil('\n', tmpstr, sizeof(tmpstr) - 1);
+      tmpstr[port_len] = '\0';
       mqtt_port = atoi(tmpstr);
       if (mqtt_port < 1 || mqtt_port > 65535) mqtt_port = 1883; // default
-      file.readBytesUntil(':', mqtt_user, sizeof(mqtt_user));
-      file.readBytesUntil('\n', mqtt_pass, sizeof(mqtt_pass));
-      file.readBytesUntil('\n', topicbase, sizeof(topicbase));
-      file.readBytesUntil('\n', myhostname, sizeof(myhostname));
+      
+      int user_len = file.readBytesUntil(':', mqtt_user, sizeof(mqtt_user) - 1);
+      mqtt_user[user_len] = '\0';
+      
+      int pass_len = file.readBytesUntil('\n', mqtt_pass, sizeof(mqtt_pass) - 1);
+      mqtt_pass[pass_len] = '\0';
+      
+      int topic_len = file.readBytesUntil('\n', topicbase, sizeof(topicbase) - 1);
+      topicbase[topic_len] = '\0';
+      
+      int host_len2 = file.readBytesUntil('\n', myhostname, sizeof(myhostname) - 1);
+      myhostname[host_len2] = '\0';
+      
       memset(tmpstr, 0, sizeof(tmpstr));
-      file.readBytesUntil('\n', tmpstr, sizeof(tmpstr));
+      int interval_len = file.readBytesUntil('\n', tmpstr, sizeof(tmpstr) - 1);
+      tmpstr[interval_len] = '\0';
       interval = atoi(tmpstr);
     }
     file.close();
@@ -174,6 +230,9 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println("\n\nESP32 ds1820 to MQTT\n\n");
+
+  // FIX: Initialize sensname array
+  memset(sensname, 0, sizeof(sensname));
 
   // Append last 3 octets of MAC to the default hostname
   uint8_t mymac[6];
@@ -268,7 +327,8 @@ void loop() {
         //      TAG_DS1820 = 6
         if (mqttclient.connect(myhostname, mqtt_user, mqtt_pass)) {
           for (int i = 0; i < scount; i++) {
-            if (sens[i] != NAN && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
+            // FIX: Use isnan() instead of direct NAN comparison
+            if (!isnan(sens[i]) && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
               // why does round() not work?
               if (sens[i] >= 0) {
                 sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 + 0.5));
@@ -312,6 +372,7 @@ void loop() {
     ESP.restart();
   }
 }
+
 /* ------------------------------------------------------------------------------- */
 // Portal code begins here
 /* ------------------------------------------------------------------------------- */
@@ -349,6 +410,12 @@ void httpRoot() {
   String html;
 
   file = SPIFFS.open("/index.html");
+  if (!file) {
+    Serial.println("Failed to open index.html");
+    server.send(500, "text/plain", "Error: index.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
@@ -359,35 +426,54 @@ void httpRoot() {
 
 void httpWifis() {
   String html;
-  char tablerows[1024];
+  String tablerows = "";  // FIX: Use String instead of large char array
   char rowbuf[256];
   char ssid[33];
   char pass[64];
   int counter = 0;
 
   portal_timer = millis();
-  memset(tablerows, '\0', sizeof(tablerows));
 
   file = SPIFFS.open("/wifis.html");
+  if (!file) {
+    Serial.println("Failed to open wifis.html");
+    server.send(500, "text/plain", "Error: wifis.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
   if (SPIFFS.exists("/known_wifis.txt")) {
     file = SPIFFS.open("/known_wifis.txt");
+    if (!file) {
+      Serial.println("Failed to open known_wifis.txt");
+      server.send(500, "text/plain", "Error: cannot read wifis");
+      return;
+    }
+    
     while (file.available()) {
       memset(rowbuf, '\0', sizeof(rowbuf));
       memset(ssid, '\0', sizeof(ssid));
       memset(pass, '\0', sizeof(pass));
-      file.readBytesUntil('\t', ssid, 32);
-      file.readBytesUntil('\n', pass, 63);
+      
+      // FIX: Add null-termination
+      int ssid_len = file.readBytesUntil('\t', ssid, sizeof(ssid) - 1);
+      ssid[ssid_len] = '\0';
+      
+      int pass_len = file.readBytesUntil('\n', pass, sizeof(pass) - 1);
+      pass[pass_len] = '\0';
+      
       sprintf(rowbuf, "<tr><td>SSID</td><td><input type=\"text\" name=\"ssid%d\" maxlength=\"32\" value=\"%s\"></td></tr>", counter, ssid);
-      strcat(tablerows, rowbuf);
+      tablerows += rowbuf;
+      
       sprintf(rowbuf, "<tr><td>PASS</td><td><input type=\"text\" name=\"pass%d\" maxlength=\"63\" value=\"%s\"></td></tr>", counter, pass);
-      strcat(tablerows, rowbuf);
+      tablerows += rowbuf;
       counter++;
     }
     file.close();
   }
+  
   html.replace("###TABLEROWS###", tablerows);
   html.replace("###COUNTER###", String(counter));
 
@@ -405,6 +491,11 @@ void httpSaveWifi() {
   String html;
 
   file = SPIFFS.open("/known_wifis.txt", FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open known_wifis.txt for writing");
+    server.send(500, "text/plain", "Error: cannot save wifis");
+    return;
+  }
 
   for (int i = 0; i < server.arg("counter").toInt(); i++) {
     if (server.arg("ssid" + String(i)).length() > 0) {
@@ -424,84 +515,113 @@ void httpSaveWifi() {
   file.close();
 
   file = SPIFFS.open("/ok.html");
+  if (!file) {
+    Serial.println("Failed to open ok.html");
+    server.send(500, "text/plain", "Error: ok.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
   server.sendHeader("Refresh", "3;url=/");
   server.send(200, "text/html; charset=UTF-8", html);
 }
+
 /* ------------------------------------------------------------------------------- */
 
 void httpSensors() {
   String html;
-  char tablerows[4096]; // 1024 was enough for five sensors, but not for 10. Gave it wide berth.
-  char rowbuf[256]; //256
-  char sname[25]; // 25
-  char saddrstr[17]; // 17
-  char tmp[4]; // 4
+  String tablerows = "";  // FIX: Use String instead of large char array
+  char rowbuf[256];
+  char sname[25];
+  char saddrstr[17];
+  char tmp[4];
   int counter = 0;
   uint8_t unexistents = 0;
   DeviceAddress saddr;
 
   portal_timer = millis();
-  memset(tablerows, '\0', sizeof(tablerows));
-  memset(tmp, '\0', sizeof(tmp));
 
   file = SPIFFS.open("/sensors.html");
+  if (!file) {
+    Serial.println("Failed to open sensors.html");
+    server.send(500, "text/plain", "Error: sensors.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
   for (int i = 0 ; i < scount; i++) {
     memset(saddrstr, '\0', sizeof(saddrstr));
     memset(sname, '\0', sizeof(sname));
+    memset(tmp, '\0', sizeof(tmp));
+    
     for (uint8_t j = 0; j < 8; j++) {
       sprintf(tmp, "%02X", sensor[i][j]);
-      strcat(saddrstr, tmp); tmp[2] = 0;
+      strcat(saddrstr, tmp); 
+      tmp[2] = 0;
       sprintf(tmp, "%02X:", sensor[i][j]);
-      strcat(sname, tmp); tmp[3] = 0;
+      strcat(sname, tmp); 
+      tmp[3] = 0;
     }
     if (saddrstr[0] != 0) {
       sname[strlen(sname) - 1] = 0;
       sprintf(rowbuf, "<tr><td>%s<br /><input type=\"text\" name=\"sname%d\" maxlength=\"24\" value=\"%s\">", sname, i, sensname[i]);
-      strcat(tablerows, rowbuf);
+      tablerows += rowbuf;
       sprintf(rowbuf, "<input type=\"hidden\" name=\"saddr%d\" value=\"%s\"></td></tr>", i, saddrstr);
-      strcat(tablerows, rowbuf);
+      tablerows += rowbuf;
       counter++;
     }
   }
 
   if (SPIFFS.exists("/known_sensors.txt")) {
     file = SPIFFS.open("/known_sensors.txt");
+    if (!file) {
+      Serial.println("Failed to open known_sensors.txt");
+      server.send(500, "text/plain", "Error: cannot read sensors");
+      return;
+    }
+    
     while (file.available()) {
       memset(sname, '\0', sizeof(sname));
       memset(saddrstr, '\0', sizeof(saddrstr));
 
-      file.readBytesUntil('\t', saddrstr, 17);
-      file.readBytesUntil('\n', sname, 25);
+      // FIX: Add null-termination
+      int addr_len = file.readBytesUntil('\t', saddrstr, sizeof(saddrstr) - 1);
+      saddrstr[addr_len] = '\0';
+      
+      int name_len = file.readBytesUntil('\n', sname, sizeof(sname) - 1);
+      sname[name_len] = '\0';
 
       if (getSensorIndex(saddrstr) == -1) {
         if (saddrstr[0] != 0) {
           if (unexistents == 0) {
             unexistents = 1;
-            strcat(tablerows, "<tr><td><hr /><b>Unexistent but saved sensors</b></td></tr>");
+            tablerows += "<tr><td><hr /><b>Unexistent but saved sensors</b></td></tr>";
           }
-          if (sname[strlen(sname) - 1] == 13) {
-            sname[strlen(sname) - 1] = 0;
+          // FIX: Check length before accessing last character
+          size_t sname_len = strlen(sname);
+          if (sname_len > 0 && sname[sname_len - 1] == 13) {
+            sname[sname_len - 1] = 0;
           }
           sprintf(rowbuf, "<tr><td>%s<br /><input type=\"text\" name=\"sname%d\" maxlength=\"24\" value=\"%s\">", saddrstr, counter, sname);
-          strcat(tablerows, rowbuf);
+          tablerows += rowbuf;
           sprintf(rowbuf, "<input type=\"hidden\" name=\"saddr%d\" value=\"%s\"></td></tr>", counter, saddrstr);
-          strcat(tablerows, rowbuf);
+          tablerows += rowbuf;
           counter++;
         }
       }
     }
     file.close();
   }
+  
   html.replace("###TABLEROWS###", tablerows);
   html.replace("###COUNTER###", String(counter));
   server.send(200, "text/html; charset=UTF-8", html);
 }
+
 /* ------------------------------------------------------------------------------- */
 
 void httpSaveSensors() {
@@ -509,6 +629,11 @@ void httpSaveSensors() {
   String html;
 
   file = SPIFFS.open("/known_sensors.txt", FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open known_sensors.txt for writing");
+    server.send(500, "text/plain", "Error: cannot save sensors");
+    return;
+  }
 
   for (int i = 0; i < server.arg("counter").toInt(); i++) {
     if (server.arg("sname" + String(i)).length() > 0) {
@@ -522,12 +647,19 @@ void httpSaveSensors() {
   loadSavedSensors(); // reread
 
   file = SPIFFS.open("/ok.html");
+  if (!file) {
+    Serial.println("Failed to open ok.html");
+    server.send(500, "text/plain", "Error: ok.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
   server.sendHeader("Refresh", "3;url=/");
   server.send(200, "text/html; charset=UTF-8", html);
 }
+
 /* ------------------------------------------------------------------------------- */
 
 void httpMQTT() {
@@ -535,6 +667,12 @@ void httpMQTT() {
   String html;
 
   file = SPIFFS.open("/mqtt.html");
+  if (!file) {
+    Serial.println("Failed to open mqtt.html");
+    server.send(500, "text/plain", "Error: mqtt.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
@@ -553,21 +691,35 @@ void httpSaveMQTT() {
   String html;
 
   file = SPIFFS.open("/mqtt.txt", FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open mqtt.txt for writing");
+    server.send(500, "text/plain", "Error: cannot save MQTT config");
+    return;
+  }
+  
   file.printf("%s\n", server.arg("hostport").c_str());
   file.printf("%s\n", server.arg("userpass").c_str());
   file.printf("%s\n", server.arg("topicbase").c_str());
   file.printf("%s\n", server.arg("myhostname").c_str());
   file.printf("%s\n", server.arg("interval").c_str());
   file.close();
+  
   loadMQTT(); // reread
 
   file = SPIFFS.open("/ok.html");
+  if (!file) {
+    Serial.println("Failed to open ok.html");
+    server.send(500, "text/plain", "Error: ok.html not found");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
   server.sendHeader("Refresh", "2;url=/");
   server.send(200, "text/html; charset=UTF-8", html);
 }
+
 /* ------------------------------------------------------------------------------- */
 
 void httpStyle() {
@@ -575,17 +727,30 @@ void httpStyle() {
   String css;
 
   File file = SPIFFS.open("/style.css");
+  if (!file) {
+    Serial.println("Failed to open style.css");
+    server.send(500, "text/css", "/* Error: style.css not found */");
+    return;
+  }
+  
   css = file.readString();
   file.close();
   server.send(200, "text/css", css);
 }
+
 /* ------------------------------------------------------------------------------- */
 
 void httpBoot() {
-
   portal_timer = millis();
   String html;
+  
   File file = SPIFFS.open("/ok.html");
+  if (!file) {
+    Serial.println("Failed to open ok.html");
+    server.send(500, "text/html; charset=UTF-8", "<html><body>Error: ok.html not found</body></html>");
+    return;
+  }
+  
   html = file.readString();
   file.close();
 
@@ -594,4 +759,5 @@ void httpBoot() {
   delay(1000);
   ESP.restart();
 }
+
 /* ------------------------------------------------------------------------------- */
