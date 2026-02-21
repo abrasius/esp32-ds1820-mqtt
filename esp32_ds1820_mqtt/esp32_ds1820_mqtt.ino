@@ -53,6 +53,7 @@ unsigned long mytime = 0;       // Used for delaying, see loop function
 int scount = 0;                 // sensors amount
 int interval = 0;               // interval in minutes
 unsigned long portal_timer = 0;
+memset(sensname, 0, sizeof(sensname));
 
 // Default hostname base. Last 3 octets of MAC are added as hex.
 // The hostname can be changed explicitly from the portal.
@@ -68,7 +69,7 @@ int  mqtt_port      = 1883;
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
-DeviceAddress sensor[11];
+DeviceAddress sensor[MAX_SENSORS];
 
 // ESP8266WiFiMulti WiFiMulti;
 WiFiClient wificlient;
