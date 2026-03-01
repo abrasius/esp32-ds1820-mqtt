@@ -43,10 +43,12 @@ int LED = 2;
 #define APREQUEST PIN_D3
 #define APTIMEOUT 120000
 #define MAX_SENSORS 10
+#define MAX_SENSOR_ROWS 32
 
 
 float sens[MAX_SENSORS];         // sensor values
 char sensname[MAX_SENSORS][24];  // sensor names
+float senscal[MAX_SENSORS];      // sensor calibration offsets in Celsius
 int sread = 0;                   // Flag if sensors have been read on this iteration
 int onewire_wait = 1;            // if we are waiting for 1wire data
 unsigned long mytime = 0;        // Used for delaying, see loop function
@@ -80,6 +82,35 @@ File file;
 TaskHandle_t sensorTaskHandle = nullptr;
 
 void sensorMqttTask(void *parameter);
+
+volatile bool calibrationActive = false;
+volatile bool calibrationCompleted = false;
+volatile bool calibrationTimedOut = false;
+volatile unsigned long calibrationStartMs = 0;
+volatile unsigned long calibrationLastSampleMs = 0;
+volatile int calibrationSelectedCount = 0;
+volatile int calibrationDoneCount = 0;
+bool calibrationSelected[MAX_SENSORS] = { false };
+bool calibrationReady[MAX_SENSORS] = { false };
+bool calibrationDone[MAX_SENSORS] = { false };
+bool calibrationHasPrev[MAX_SENSORS] = { false };
+float calibrationPrevTemp[MAX_SENSORS] = { 0 };
+float calibrationLastTemp[MAX_SENSORS] = { NAN };
+float calibrationSampleSum[MAX_SENSORS] = { 0 };
+uint8_t calibrationSampleCount[MAX_SENSORS] = { 0 };
+float calibrationComputedOffset[MAX_SENSORS] = { 0 };
+
+int calibrationRowCount = 0;
+char calibrationRowAddr[MAX_SENSOR_ROWS][17];
+char calibrationRowName[MAX_SENSOR_ROWS][25];
+float calibrationRowCal[MAX_SENSOR_ROWS];
+int calibrationRowSensorIdx[MAX_SENSOR_ROWS];
+
+const float CALIBRATION_READY_RANGE_C = 2.0;
+const float CALIBRATION_STABLE_DELTA_C = 0.25;
+const uint8_t CALIBRATION_TARGET_SAMPLES = 10;
+const unsigned long CALIBRATION_SAMPLE_INTERVAL_MS = 1000;
+const unsigned long CALIBRATION_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 
 /* ------------------------------------------------------------------------------- */
 void loadWifis() {
@@ -142,11 +173,9 @@ int getSensorIndex(const char *hexString) {
 }
 
 void loadSavedSensors() {
-  char sname[25];
-  char saddrstr[17];
-
-  // Reset names first so deleted mappings do not persist in RAM.
+  // Reset names/calibration first so deleted mappings do not persist in RAM.
   memset(sensname, 0, sizeof(sensname));
+  memset(senscal, 0, sizeof(senscal));
 
   if (SPIFFS.exists("/known_sensors.txt")) {
     file = SPIFFS.open("/known_sensors.txt");
@@ -156,21 +185,27 @@ void loadSavedSensors() {
     }
 
     while (file.available()) {
-      memset(sname, '\0', sizeof(sname));
-      memset(saddrstr, '\0', sizeof(saddrstr));
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) {
+        continue;
+      }
 
-      // FIX: Add null-termination after readBytesUntil
-      int addr_len = file.readBytesUntil('\t', saddrstr, sizeof(saddrstr) - 1);
-      saddrstr[addr_len] = '\0';
+      int tab1 = line.indexOf('\t');
+      if (tab1 <= 0) {
+        continue;
+      }
+      int tab2 = line.indexOf('\t', tab1 + 1);
 
-      int name_len = file.readBytesUntil('\n', sname, sizeof(sname) - 1);
-      sname[name_len] = '\0';
+      String saddr = line.substring(0, tab1);
+      String sname = (tab2 >= 0) ? line.substring(tab1 + 1, tab2) : line.substring(tab1 + 1);
+      String scal = (tab2 >= 0) ? line.substring(tab2 + 1) : "0";
 
-      // FIX: Store result of getSensorIndex once and check bounds
-      int idx = getSensorIndex(saddrstr);
+      int idx = getSensorIndex(saddr.c_str());
       if (idx >= 0 && idx < MAX_SENSORS) {
-        strncpy(sensname[idx], sname, sizeof(sensname[idx]) - 1);
+        strncpy(sensname[idx], sname.c_str(), sizeof(sensname[idx]) - 1);
         sensname[idx][sizeof(sensname[idx]) - 1] = '\0';
+        senscal[idx] = scal.toFloat();
       }
     }
 
@@ -239,6 +274,7 @@ void setup() {
 
   // FIX: Initialize sensname array
   memset(sensname, 0, sizeof(sensname));
+  memset(senscal, 0, sizeof(senscal));
 
   // Append last 3 octets of MAC to the default hostname
   uint8_t mymac[6];
@@ -331,6 +367,8 @@ void sensorMqttTask(void *parameter) {
   (void)parameter;
 
   for (;;) {
+    calibrationTick();
+
     if (portal_timer == 0) {
       digitalWrite(LED, LED_OFF);
       sread = 0;
@@ -377,11 +415,15 @@ void sensorMqttTask(void *parameter) {
             for (int i = 0; i < scount; i++) {
               // FIX: Use isnan() instead of direct NAN comparison
               if (!isnan(sens[i]) && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
+                if (calibrationActive && calibrationSelected[i]) {
+                  continue;
+                }
+                float corrected = sens[i] + senscal[i];
                 // why does round() not work?
-                if (sens[i] >= 0) {
-                  sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 + 0.5));
+                if (corrected >= 0) {
+                  sprintf(json, "{\"type\":6,\"t\":%d}", int(corrected * 10.0 + 0.5));
                 } else {
-                  sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 - 0.5));
+                  sprintf(json, "{\"type\":6,\"t\":%d}", int(corrected * 10.0 - 0.5));
                 }
                 if (strlen(topicbase) > 0) {
                   snprintf(topic, sizeof(topic), "%s/%s", topicbase, sensname[i]);
@@ -389,7 +431,7 @@ void sensorMqttTask(void *parameter) {
                   snprintf(topic, sizeof(topic), "%s", sensname[i]);
                 }
                 mqttclient.publish(topic, json);
-                Serial.printf("%s %s\n", topic, json);
+                Serial.printf("%s %s (raw %.4f°C, cal %.4f°C)\n", topic, json, sens[i], senscal[i]);
               }
             }
             mqttclient.disconnect();
@@ -404,6 +446,110 @@ void sensorMqttTask(void *parameter) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+bool saveCalibrationRowsToFile() {
+  file = SPIFFS.open("/known_sensors.txt", FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open known_sensors.txt for writing");
+    return false;
+  }
+
+  for (int i = 0; i < calibrationRowCount; i++) {
+    if (calibrationRowName[i][0] == '\0' || calibrationRowAddr[i][0] == '\0') {
+      continue;
+    }
+    file.printf("%s\t%s\t%.6f\n", calibrationRowAddr[i], calibrationRowName[i], calibrationRowCal[i]);
+  }
+
+  file.close();
+  loadSavedSensors();
+  return true;
+}
+
+void finalizeCalibration() {
+  for (int row = 0; row < calibrationRowCount; row++) {
+    int idx = calibrationRowSensorIdx[row];
+    if (idx >= 0 && idx < MAX_SENSORS && calibrationDone[idx]) {
+      calibrationRowCal[row] = calibrationComputedOffset[idx];
+    }
+  }
+
+  if (!saveCalibrationRowsToFile()) {
+    Serial.println("Calibration finalize failed to save known_sensors.txt");
+    calibrationActive = false;
+    calibrationCompleted = false;
+    return;
+  }
+  calibrationActive = false;
+  calibrationCompleted = true;
+  sensors.setWaitForConversion(false);
+}
+
+void calibrationTick() {
+  if (!calibrationActive) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - calibrationStartMs >= CALIBRATION_TIMEOUT_MS) {
+    calibrationTimedOut = true;
+    finalizeCalibration();
+    return;
+  }
+
+  if (now - calibrationLastSampleMs < CALIBRATION_SAMPLE_INTERVAL_MS) {
+    return;
+  }
+  calibrationLastSampleMs = now;
+
+  sensors.setWaitForConversion(true);
+  sensors.requestTemperatures();
+
+  for (int i = 0; i < scount; i++) {
+    if (!calibrationSelected[i] || calibrationDone[i]) {
+      continue;
+    }
+
+    float sample = sensors.getTempC(sensor[i]);
+    calibrationLastTemp[i] = sample;
+    if (isnan(sample) || sample == 85.0 || sample < -60.0 || sample > 60.0) {
+      continue;
+    }
+
+    if (!calibrationReady[i]) {
+      if (fabs(sample) <= CALIBRATION_READY_RANGE_C) {
+        calibrationReady[i] = true;
+        calibrationHasPrev[i] = true;
+        calibrationPrevTemp[i] = sample;
+      }
+      continue;
+    }
+
+    if (!calibrationHasPrev[i]) {
+      calibrationHasPrev[i] = true;
+      calibrationPrevTemp[i] = sample;
+      continue;
+    }
+
+    float delta = fabs(sample - calibrationPrevTemp[i]);
+    calibrationPrevTemp[i] = sample;
+    if (delta <= CALIBRATION_STABLE_DELTA_C) {
+      calibrationSampleSum[i] += sample;
+      calibrationSampleCount[i]++;
+    }
+
+    if (calibrationSampleCount[i] >= CALIBRATION_TARGET_SAMPLES) {
+      calibrationDone[i] = true;
+      calibrationDoneCount++;
+      float average = calibrationSampleSum[i] / float(calibrationSampleCount[i]);
+      calibrationComputedOffset[i] = -average;
+    }
+  }
+
+  if (calibrationDoneCount >= calibrationSelectedCount) {
+    finalizeCalibration();
   }
 }
 
@@ -426,6 +572,8 @@ void startPortal() {
   server.on("/savewifi", httpSaveWifi);
   server.on("/sensors.html", httpSensors);
   server.on("/savesens", httpSaveSensors);
+  server.on("/calsens", httpCalibrateSensors);
+  server.on("/calstatus", httpCalibrationStatus);
   server.on("/mqtt.html", httpMQTT);
   server.on("/savemqtt", httpSaveMQTT);
   server.on("/boot", httpBoot);
@@ -567,13 +715,13 @@ void httpSaveWifi() {
 void httpSensors() {
   String html;
   String tablerows = "";  // FIX: Use String instead of large char array
-  char rowbuf[256];
+  char rowbuf[512];
+  char calbuf[24];
   char sname[25];
   char saddrstr[17];
   char tmp[4];
   int counter = 0;
   uint8_t unexistents = 0;
-  DeviceAddress saddr;
 
   portal_timer = millis();
 
@@ -602,9 +750,10 @@ void httpSensors() {
     }
     if (saddrstr[0] != 0) {
       sname[strlen(sname) - 1] = 0;
-      sprintf(rowbuf, "<tr><td>%s<br /><input type=\"text\" name=\"sname%d\" maxlength=\"24\" value=\"%s\">", sname, i, sensname[i]);
+      snprintf(calbuf, sizeof(calbuf), "%.4f", senscal[i]);
+      snprintf(rowbuf, sizeof(rowbuf), "<tr><td>%s</td><td><input type=\"text\" name=\"sname%d\" maxlength=\"24\" value=\"%s\"></td><td><input type=\"text\" name=\"scal%d\" maxlength=\"20\" value=\"%s\"></td><td><input type=\"checkbox\" name=\"calrun%d\" value=\"1\"></td></tr>", sname, i, sensname[i], i, calbuf, i);
       tablerows += rowbuf;
-      sprintf(rowbuf, "<input type=\"hidden\" name=\"saddr%d\" value=\"%s\"></td></tr>", i, saddrstr);
+      snprintf(rowbuf, sizeof(rowbuf), "<input type=\"hidden\" name=\"saddr%d\" value=\"%s\">", i, saddrstr);
       tablerows += rowbuf;
       counter++;
     }
@@ -619,30 +768,31 @@ void httpSensors() {
     }
 
     while (file.available()) {
-      memset(sname, '\0', sizeof(sname));
-      memset(saddrstr, '\0', sizeof(saddrstr));
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) {
+        continue;
+      }
 
-      // FIX: Add null-termination
-      int addr_len = file.readBytesUntil('\t', saddrstr, sizeof(saddrstr) - 1);
-      saddrstr[addr_len] = '\0';
+      int tab1 = line.indexOf('\t');
+      if (tab1 <= 0) {
+        continue;
+      }
+      int tab2 = line.indexOf('\t', tab1 + 1);
 
-      int name_len = file.readBytesUntil('\n', sname, sizeof(sname) - 1);
-      sname[name_len] = '\0';
+      String addr = line.substring(0, tab1);
+      String name = (tab2 >= 0) ? line.substring(tab1 + 1, tab2) : line.substring(tab1 + 1);
+      String cal = (tab2 >= 0) ? line.substring(tab2 + 1) : "0";
 
-      if (getSensorIndex(saddrstr) == -1) {
-        if (saddrstr[0] != 0) {
+      if (getSensorIndex(addr.c_str()) == -1) {
+        if (addr.length() > 0) {
           if (unexistents == 0) {
             unexistents = 1;
-            tablerows += "<tr><td><hr /><b>Unexistent but saved sensors</b></td></tr>";
+            tablerows += "<tr><td colspan=\"4\"><hr /><b>Unexistent but saved sensors</b></td></tr>";
           }
-          // FIX: Check length before accessing last character
-          size_t sname_len = strlen(sname);
-          if (sname_len > 0 && sname[sname_len - 1] == 13) {
-            sname[sname_len - 1] = 0;
-          }
-          sprintf(rowbuf, "<tr><td>%s<br /><input type=\"text\" name=\"sname%d\" maxlength=\"24\" value=\"%s\">", saddrstr, counter, sname);
+          snprintf(rowbuf, sizeof(rowbuf), "<tr><td>%s</td><td><input type=\"text\" name=\"sname%d\" maxlength=\"24\" value=\"%s\"></td><td><input type=\"text\" name=\"scal%d\" maxlength=\"20\" value=\"%s\"></td><td><input type=\"checkbox\" name=\"calrun%d\" value=\"1\" disabled></td></tr>", addr.c_str(), counter, name.c_str(), counter, cal.c_str(), counter);
           tablerows += rowbuf;
-          sprintf(rowbuf, "<input type=\"hidden\" name=\"saddr%d\" value=\"%s\"></td></tr>", counter, saddrstr);
+          snprintf(rowbuf, sizeof(rowbuf), "<input type=\"hidden\" name=\"saddr%d\" value=\"%s\">", counter, addr.c_str());
           tablerows += rowbuf;
           counter++;
         }
@@ -671,10 +821,11 @@ void httpSaveSensors() {
 
   for (int i = 0; i < server.arg("counter").toInt(); i++) {
     if (server.arg("sname" + String(i)).length() > 0) {
-      file.print(server.arg("saddr" + String(i)));
-      file.print("\t");
-      file.print(server.arg("sname" + String(i)));
-      file.print("\n");
+      float cal = server.arg("scal" + String(i)).toFloat();
+      file.printf("%s\t%s\t%.6f\n",
+                  server.arg("saddr" + String(i)).c_str(),
+                  server.arg("sname" + String(i)).c_str(),
+                  cal);
     }
   }
   file.close();
@@ -692,6 +843,163 @@ void httpSaveSensors() {
 
   server.sendHeader("Refresh", "3;url=/");
   server.send(200, "text/html; charset=UTF-8", html);
+}
+
+/* ------------------------------------------------------------------------------- */
+
+void httpCalibrateSensors() {
+  portal_timer = millis();
+
+  if (calibrationActive) {
+    server.send(409, "text/plain", "Calibration is already running.");
+    return;
+  }
+
+  calibrationRowCount = 0;
+  calibrationSelectedCount = 0;
+  calibrationDoneCount = 0;
+  calibrationCompleted = false;
+  calibrationTimedOut = false;
+  calibrationStartMs = millis();
+  calibrationLastSampleMs = 0;
+
+  memset(calibrationSelected, 0, sizeof(calibrationSelected));
+  memset(calibrationReady, 0, sizeof(calibrationReady));
+  memset(calibrationDone, 0, sizeof(calibrationDone));
+  memset(calibrationHasPrev, 0, sizeof(calibrationHasPrev));
+  memset(calibrationSampleSum, 0, sizeof(calibrationSampleSum));
+  memset(calibrationSampleCount, 0, sizeof(calibrationSampleCount));
+  memset(calibrationComputedOffset, 0, sizeof(calibrationComputedOffset));
+  for (int i = 0; i < MAX_SENSORS; i++) {
+    calibrationLastTemp[i] = NAN;
+    calibrationPrevTemp[i] = 0;
+  }
+
+  int counter = server.arg("counter").toInt();
+  if (counter > MAX_SENSOR_ROWS) {
+    counter = MAX_SENSOR_ROWS;
+  }
+
+  for (int i = 0; i < counter; i++) {
+    String nameArg = server.arg("sname" + String(i));
+    if (nameArg.length() == 0) {
+      continue;
+    }
+
+    String addrArg = server.arg("saddr" + String(i));
+    if (addrArg.length() == 0 || calibrationRowCount >= MAX_SENSOR_ROWS) {
+      continue;
+    }
+
+    int row = calibrationRowCount;
+    calibrationRowCount++;
+
+    strncpy(calibrationRowAddr[row], addrArg.c_str(), sizeof(calibrationRowAddr[row]) - 1);
+    calibrationRowAddr[row][sizeof(calibrationRowAddr[row]) - 1] = '\0';
+    strncpy(calibrationRowName[row], nameArg.c_str(), sizeof(calibrationRowName[row]) - 1);
+    calibrationRowName[row][sizeof(calibrationRowName[row]) - 1] = '\0';
+    calibrationRowCal[row] = server.arg("scal" + String(i)).toFloat();
+
+    int idx = getSensorIndex(addrArg.c_str());
+    calibrationRowSensorIdx[row] = idx;
+
+    bool selectedForCalibration = (server.arg("calrun" + String(i)).length() > 0);
+    if (selectedForCalibration && idx >= 0 && idx < MAX_SENSORS && !calibrationSelected[idx]) {
+      calibrationSelected[idx] = true;
+      calibrationSelectedCount++;
+    }
+  }
+
+  if (calibrationSelectedCount == 0) {
+    server.send(400, "text/plain", "Select at least one existing sensor for calibration.");
+    return;
+  }
+
+  // Persist names/manual offsets from the form first so calibration updates the current UI state.
+  if (!saveCalibrationRowsToFile()) {
+    server.send(500, "text/plain", "Error: cannot save sensors");
+    return;
+  }
+  calibrationActive = true;
+
+  String html = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\"></head><body>";
+  html += "<table>";
+  html += "<tr><td><b>Calibration Running</b></td></tr>";
+  html += "<tr><td>Instructions:</td></tr>";
+  html += "<tr><td>1. Put selected sensors in well-mixed ice water.</td></tr>";
+  html += "<tr><td>2. Wait until each selected sensor reaches within +/-2.0 C from zero.</td></tr>";
+  html += "<tr><td>3. Sampling starts automatically after that and collects 10 stabilized values per sensor.</td></tr>";
+  html += "<tr><td>4. Timeout is 5 minutes. Completed sensors are still saved if timeout happens.</td></tr>";
+  html += "<tr><td><pre id=\"calstatus\">Starting...</pre></td></tr>";
+  html += "<tr><td><a class=\"fakebutton\" href=\"/sensors.html\">back to sensors</a></td></tr>";
+  html += "</table>";
+  html += "<script>";
+  html += "function u(){fetch('/calstatus').then(r=>r.json()).then(j=>{";
+  html += "let t='Elapsed: '+j.elapsed_s+'s / '+j.timeout_s+'s\\n';";
+  html += "t+='Completed: '+j.done_sensors+'/'+j.selected_sensors+' sensors\\n';";
+  html += "if(j.timed_out){t+='Status: timed out\\n';} else if(j.active){t+='Status: running\\n';} else if(j.completed){t+='Status: completed\\n';}";
+  html += "for(let i=0;i<j.sensors.length;i++){let s=j.sensors[i];t+='- '+s.name+': '+s.state+', samples '+s.samples+'/'+s.target; if(s.last_valid){t+=', last '+s.last.toFixed(3)+' C';} if(s.done){t+=', offset '+s.offset.toFixed(4)+' C';} t+='\\n';}";
+  html += "document.getElementById('calstatus').textContent=t; if(j.active){setTimeout(u,1000);} });}";
+  html += "u();";
+  html += "</script></body></html>";
+  server.send(200, "text/html; charset=UTF-8", html);
+}
+
+void httpCalibrationStatus() {
+  portal_timer = millis();
+
+  unsigned long now = millis();
+  unsigned long elapsed = calibrationStartMs > 0 ? (now - calibrationStartMs) : 0;
+  if (elapsed > CALIBRATION_TIMEOUT_MS) {
+    elapsed = CALIBRATION_TIMEOUT_MS;
+  }
+
+  String json = "{";
+  json += "\"active\":" + String(calibrationActive ? 1 : 0) + ",";
+  json += "\"completed\":" + String(calibrationCompleted ? 1 : 0) + ",";
+  json += "\"timed_out\":" + String(calibrationTimedOut ? 1 : 0) + ",";
+  json += "\"elapsed_s\":" + String(elapsed / 1000) + ",";
+  json += "\"timeout_s\":" + String(CALIBRATION_TIMEOUT_MS / 1000) + ",";
+  json += "\"selected_sensors\":" + String(calibrationSelectedCount) + ",";
+  json += "\"done_sensors\":" + String(calibrationDoneCount) + ",";
+  json += "\"sensors\":[";
+
+  bool first = true;
+  for (int i = 0; i < scount; i++) {
+    if (!calibrationSelected[i]) {
+      continue;
+    }
+    if (!first) {
+      json += ",";
+    }
+    first = false;
+
+    String state = "waiting";
+    if (calibrationDone[i]) {
+      state = "done";
+    } else if (calibrationReady[i]) {
+      state = "sampling";
+    }
+
+    bool lastValid = !isnan(calibrationLastTemp[i]);
+    json += "{";
+    json += "\"name\":\"" + String(sensname[i]) + "\",";
+    json += "\"state\":\"" + state + "\",";
+    json += "\"samples\":" + String(calibrationSampleCount[i]) + ",";
+    json += "\"target\":" + String(CALIBRATION_TARGET_SAMPLES) + ",";
+    json += "\"done\":" + String(calibrationDone[i] ? 1 : 0) + ",";
+    json += "\"last_valid\":" + String(lastValid ? 1 : 0) + ",";
+    if (lastValid) {
+      json += "\"last\":" + String(calibrationLastTemp[i], 4) + ",";
+    } else {
+      json += "\"last\":0,";
+    }
+    json += "\"offset\":" + String(calibrationComputedOffset[i], 6);
+    json += "}";
+  }
+
+  json += "]}";
+  server.send(200, "application/json", json);
 }
 
 /* ------------------------------------------------------------------------------- */
