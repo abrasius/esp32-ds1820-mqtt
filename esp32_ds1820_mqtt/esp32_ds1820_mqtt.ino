@@ -142,6 +142,9 @@ void loadSavedSensors() {
   char sname[25];
   char saddrstr[17];
 
+  // Reset names first so deleted mappings do not persist in RAM.
+  memset(sensname, 0, sizeof(sensname));
+
   if (SPIFFS.exists("/known_sensors.txt")) {
     file = SPIFFS.open("/known_sensors.txt");
     if (!file) {
@@ -262,7 +265,11 @@ void setup() {
     }
   }
 
-  SPIFFS.begin();
+  if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) {
+    Serial.println("SPIFFS mount failed, starting portal");
+    startPortal();
+    return;
+  }
 
   // If there are no configuration files, start portal.
   if (SPIFFS.exists("/mqtt.txt") && SPIFFS.exists("/known_wifis.txt") && SPIFFS.exists("/known_sensors.txt")) {
@@ -300,7 +307,7 @@ void loop() {
     }
 
     // after 1000ms per sensor the sensors should be read already
-    if (millis() - mytime > 1000 * scount && onewire_wait == 1) {
+    if (scount > 0 && millis() - mytime > 1000 * scount && onewire_wait == 1) {
       mytime = millis();
       onewire_wait = 0;
       for (int i = 0; i < scount; i++) {
@@ -321,7 +328,7 @@ void loop() {
       sread = 0;
       if (WiFi.status() == WL_CONNECTED) {
         char json[32];  // This is enough space here
-        char topic[128];
+        char topic[320];
         // We send in deciCelsius
         // See: https://github.com/oh2mp/esp32_ble2mqtt/blob/main/DATAFORMATS.md
         //      TAG_DS1820 = 6
@@ -336,9 +343,9 @@ void loop() {
                 sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 - 0.5));
               }
               if (strlen(topicbase) > 0) {
-                sprintf(topic, "%s/%s", topicbase, sensname[i]);
+                snprintf(topic, sizeof(topic), "%s/%s", topicbase, sensname[i]);
               } else {
-                sprintf(topic, "%s", sensname[i]);
+                snprintf(topic, sizeof(topic), "%s", sensname[i]);
               }
               mqttclient.publish(topic, json);
               Serial.printf("%s %s\n", topic, json);
