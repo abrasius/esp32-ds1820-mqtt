@@ -52,7 +52,7 @@ int onewire_wait = 1;            // if we are waiting for 1wire data
 unsigned long mytime = 0;        // Used for delaying, see loop function
 int scount = 0;                  // sensors amount
 int interval = 0;                // interval in minutes
-unsigned long portal_timer = 0;
+volatile unsigned long portal_timer = 0;
 
 // Default hostname base. Last 3 octets of MAC are added as hex.
 // The hostname can be changed explicitly from the portal.
@@ -77,6 +77,9 @@ PubSubClient mqttclient(wificlient);
 WebServer server(80);
 IPAddress apIP(192, 168, 4, 1);  // portal ip address
 File file;
+TaskHandle_t sensorTaskHandle = nullptr;
+
+void sensorMqttTask(void *parameter);
 
 /* ------------------------------------------------------------------------------- */
 void loadWifis() {
@@ -285,82 +288,25 @@ void setup() {
   } else {
     startPortal();
   }
+
+#if CONFIG_FREERTOS_UNICORE
+  const BaseType_t sensorCore = 0;
+#else
+  const BaseType_t sensorCore = (xPortGetCoreID() == 0) ? 1 : 0;
+#endif
+  xTaskCreatePinnedToCore(
+    sensorMqttTask,
+    "sensor_mqtt",
+    8192,
+    nullptr,
+    1,
+    &sensorTaskHandle,
+    sensorCore);
 }
 
 /* ------------------------------------------------------------------------------- */
 void loop() {
-  if (portal_timer == 0) {
-    digitalWrite(LED, LED_OFF);
-
-    sread = 0;
-
-    // If it has been more than interval minutes since last temperature read, do it now
-    if ((millis() - mytime > 60000 * interval && interval > 0) || interval == 0) {
-      if (onewire_wait == 0) {
-        mytime = millis();
-        sensors.setWaitForConversion(false);
-        sensors.requestTemperatures();
-        pinMode(ONE_WIRE_BUS, OUTPUT);
-        digitalWrite(ONE_WIRE_BUS, HIGH);
-        onewire_wait = 1;
-      }
-    }
-
-    // after 1000ms per sensor the sensors should be read already
-    if (scount > 0 && millis() - mytime > 1000 * scount && onewire_wait == 1) {
-      mytime = millis();
-      onewire_wait = 0;
-      for (int i = 0; i < scount; i++) {
-        if (sensors.isConnected(sensor[i])) {
-          sens[i] = sensors.getTempC(sensor[i]);
-          Serial.printf("sensor %d raw: 0x%X = %.4f°C\n", i, sensors.getTemp(sensor[i]), sens[i]);
-        } else {
-          sens[i] = NAN;
-        }
-      }
-      sread = 1;
-    }
-
-    if (sread == 1) {
-      // send MQTT
-      WiFi.mode(WIFI_STA);
-
-      sread = 0;
-      if (WiFi.status() == WL_CONNECTED) {
-        char json[32];  // This is enough space here
-        char topic[320];
-        // We send in deciCelsius
-        // See: https://github.com/oh2mp/esp32_ble2mqtt/blob/main/DATAFORMATS.md
-        //      TAG_DS1820 = 6
-        if (mqttclient.connect(myhostname, mqtt_user, mqtt_pass)) {
-          for (int i = 0; i < scount; i++) {
-            // FIX: Use isnan() instead of direct NAN comparison
-            if (!isnan(sens[i]) && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
-              // why does round() not work?
-              if (sens[i] >= 0) {
-                sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 + 0.5));
-              } else {
-                sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 - 0.5));
-              }
-              if (strlen(topicbase) > 0) {
-                snprintf(topic, sizeof(topic), "%s/%s", topicbase, sensname[i]);
-              } else {
-                snprintf(topic, sizeof(topic), "%s", sensname[i]);
-              }
-              mqttclient.publish(topic, json);
-              Serial.printf("%s %s\n", topic, json);
-            }
-          }
-          mqttclient.disconnect();
-        } else {
-          Serial.printf("Failed to connect MQTT broker, state=%d\n", mqttclient.state());
-        }
-
-      } else {
-        Serial.printf("Failed to connect WiFi, status=%d\n", WiFi.status());
-      }
-    }
-  } else if (portal_timer > 0) {  // portal mode
+  if (portal_timer > 0) {  // portal mode
     server.handleClient();
 
     // blink onboard leds if we are in portal mode
@@ -377,6 +323,87 @@ void loop() {
     Serial.println("Portal timeout. Booting.");
     delay(1000);
     ESP.restart();
+  }
+  delay(10);
+}
+
+void sensorMqttTask(void *parameter) {
+  (void)parameter;
+
+  for (;;) {
+    if (portal_timer == 0) {
+      digitalWrite(LED, LED_OFF);
+      sread = 0;
+
+      // If it has been more than interval minutes since last temperature read, do it now
+      if ((millis() - mytime > 60000 * interval && interval > 0) || interval == 0) {
+        if (onewire_wait == 0) {
+          mytime = millis();
+          sensors.setWaitForConversion(false);
+          sensors.requestTemperatures();
+          pinMode(ONE_WIRE_BUS, OUTPUT);
+          digitalWrite(ONE_WIRE_BUS, HIGH);
+          onewire_wait = 1;
+        }
+      }
+
+      // after 1000ms per sensor the sensors should be read already
+      if (scount > 0 && millis() - mytime > 1000 * scount && onewire_wait == 1) {
+        mytime = millis();
+        onewire_wait = 0;
+        for (int i = 0; i < scount; i++) {
+          if (sensors.isConnected(sensor[i])) {
+            sens[i] = sensors.getTempC(sensor[i]);
+            Serial.printf("sensor %d raw: 0x%X = %.4f°C\n", i, sensors.getTemp(sensor[i]), sens[i]);
+          } else {
+            sens[i] = NAN;
+          }
+        }
+        sread = 1;
+      }
+
+      if (sread == 1) {
+        // send MQTT
+        WiFi.mode(WIFI_STA);
+
+        sread = 0;
+        if (WiFi.status() == WL_CONNECTED) {
+          char json[32];  // This is enough space here
+          char topic[320];
+          // We send in deciCelsius
+          // See: https://github.com/oh2mp/esp32_ble2mqtt/blob/main/DATAFORMATS.md
+          //      TAG_DS1820 = 6
+          if (mqttclient.connect(myhostname, mqtt_user, mqtt_pass)) {
+            for (int i = 0; i < scount; i++) {
+              // FIX: Use isnan() instead of direct NAN comparison
+              if (!isnan(sens[i]) && sens[i] != 85.0 && sens[i] > -60.0 && strlen(sensname[i]) > 0) {
+                // why does round() not work?
+                if (sens[i] >= 0) {
+                  sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 + 0.5));
+                } else {
+                  sprintf(json, "{\"type\":6,\"t\":%d}", int(sens[i] * 10.0 - 0.5));
+                }
+                if (strlen(topicbase) > 0) {
+                  snprintf(topic, sizeof(topic), "%s/%s", topicbase, sensname[i]);
+                } else {
+                  snprintf(topic, sizeof(topic), "%s", sensname[i]);
+                }
+                mqttclient.publish(topic, json);
+                Serial.printf("%s %s\n", topic, json);
+              }
+            }
+            mqttclient.disconnect();
+          } else {
+            Serial.printf("Failed to connect MQTT broker, state=%d\n", mqttclient.state());
+          }
+
+        } else {
+          Serial.printf("Failed to connect WiFi, status=%d\n", WiFi.status());
+        }
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
