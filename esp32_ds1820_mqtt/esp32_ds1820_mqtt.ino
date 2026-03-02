@@ -25,6 +25,8 @@
 #include <FS.h>
 #include <SPIFFS.h>
 #include <cmath>
+#include <cctype>
+#include <cstring>
 
 #define FORMAT_SPIFFS_IF_FAILED true
 
@@ -111,6 +113,198 @@ const float CALIBRATION_STABLE_DELTA_C = 0.25;
 const uint8_t CALIBRATION_TARGET_SAMPLES = 10;
 const unsigned long CALIBRATION_SAMPLE_INTERVAL_MS = 1000;
 const unsigned long CALIBRATION_TIMEOUT_MS = 5UL * 60UL * 1000UL;
+
+/* ------------------------------------------------------------------------------- */
+bool hasCommandInjectionChars(const String &value) {
+  const char *blocked = "`|;&$<>";
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (c == '\r' || c == '\n' || c == '\t' || static_cast<unsigned char>(c) < 32 || c == 127) {
+      return true;
+    }
+    if (strchr(blocked, c) != nullptr) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool hasUnsafeControlChars(const String &value) {
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (c == '\r' || c == '\n' || c == '\t' || static_cast<unsigned char>(c) < 32 || c == 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isHexAddress16(const String &value) {
+  if (value.length() != 16) {
+    return false;
+  }
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isSafeSensorName(const String &value) {
+  if (value.length() == 0 || value.length() > 24 || hasCommandInjectionChars(value)) {
+    return false;
+  }
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (!(isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == ' ')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool parseCalibrationValue(const String &input, float &valueOut) {
+  if (input.length() == 0) {
+    valueOut = 0.0f;
+    return true;
+  }
+  if (input.length() > 20 || hasCommandInjectionChars(input)) {
+    return false;
+  }
+  bool hasDigit = false;
+  for (size_t i = 0; i < input.length(); i++) {
+    char c = input[i];
+    if (isdigit(static_cast<unsigned char>(c))) {
+      hasDigit = true;
+      continue;
+    }
+    if (c == '+' || c == '-' || c == '.') {
+      continue;
+    }
+    return false;
+  }
+  if (!hasDigit) {
+    return false;
+  }
+
+  valueOut = input.toFloat();
+  if (valueOut < -50.0f || valueOut > 50.0f) {
+    return false;
+  }
+  return true;
+}
+
+bool isSafeWifiField(const String &value, size_t maxLen) {
+  return value.length() <= maxLen && !hasUnsafeControlChars(value);
+}
+
+bool parseHostPortArg(const String &hostPort, String &hostOut, int &portOut) {
+  if (hostPort.length() == 0 || hostPort.length() > 128 || hasCommandInjectionChars(hostPort)) {
+    return false;
+  }
+
+  int sep = hostPort.indexOf(':');
+  if (sep <= 0 || sep >= hostPort.length() - 1 || hostPort.indexOf(':', sep + 1) != -1) {
+    return false;
+  }
+
+  String host = hostPort.substring(0, sep);
+  String portStr = hostPort.substring(sep + 1);
+  if (host.length() == 0 || host.length() >= sizeof(mqtt_host) || portStr.length() > 5) {
+    return false;
+  }
+
+  for (size_t i = 0; i < host.length(); i++) {
+    char c = host[i];
+    if (!(isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-')) {
+      return false;
+    }
+  }
+
+  for (size_t i = 0; i < portStr.length(); i++) {
+    if (!isdigit(static_cast<unsigned char>(portStr[i]))) {
+      return false;
+    }
+  }
+
+  int port = portStr.toInt();
+  if (port < 1 || port > 65535) {
+    return false;
+  }
+
+  hostOut = host;
+  portOut = port;
+  return true;
+}
+
+bool parseUserPassArg(const String &userPass, String &userOut, String &passOut) {
+  if (userPass.length() == 0 || userPass.length() > 256 || hasUnsafeControlChars(userPass)) {
+    return false;
+  }
+
+  int sep = userPass.indexOf(':');
+  if (sep <= 0 || sep >= userPass.length() - 1) {
+    return false;
+  }
+
+  String user = userPass.substring(0, sep);
+  String pass = userPass.substring(sep + 1);
+  if (user.length() == 0 || user.length() >= sizeof(mqtt_user) || pass.length() >= sizeof(mqtt_pass)) {
+    return false;
+  }
+  if (hasUnsafeControlChars(user) || hasUnsafeControlChars(pass)) {
+    return false;
+  }
+
+  userOut = user;
+  passOut = pass;
+  return true;
+}
+
+bool isSafeTopicBase(const String &topicBase) {
+  if (topicBase.length() == 0 || topicBase.length() >= sizeof(topicbase) || hasCommandInjectionChars(topicBase)) {
+    return false;
+  }
+  for (size_t i = 0; i < topicBase.length(); i++) {
+    char c = topicBase[i];
+    if (!(isalnum(static_cast<unsigned char>(c)) || c == '/' || c == '_' || c == '-' || c == '.')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isSafeHostname(const String &hostname) {
+  if (hostname.length() == 0 || hostname.length() >= sizeof(myhostname) || hasCommandInjectionChars(hostname)) {
+    return false;
+  }
+  for (size_t i = 0; i < hostname.length(); i++) {
+    char c = hostname[i];
+    if (!(isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '.')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool parseIntervalArg(const String &intervalArg, int &intervalOut) {
+  if (intervalArg.length() == 0 || intervalArg.length() > 5 || hasCommandInjectionChars(intervalArg)) {
+    return false;
+  }
+  for (size_t i = 0; i < intervalArg.length(); i++) {
+    if (!isdigit(static_cast<unsigned char>(intervalArg[i]))) {
+      return false;
+    }
+  }
+  int val = intervalArg.toInt();
+  if (val < 0 || val > 1440) {
+    return false;
+  }
+  intervalOut = val;
+  return true;
+}
 
 /* ------------------------------------------------------------------------------- */
 void loadWifis() {
@@ -676,6 +870,11 @@ void httpWifis() {
 void httpSaveWifi() {
   portal_timer = millis();
   String html;
+  int counter = server.arg("counter").toInt();
+  if (counter < 0 || counter > 64) {
+    server.send(400, "text/plain", "Error: invalid counter");
+    return;
+  }
 
   file = SPIFFS.open("/known_wifis.txt", FILE_WRITE);
   if (!file) {
@@ -684,19 +883,33 @@ void httpSaveWifi() {
     return;
   }
 
-  for (int i = 0; i < server.arg("counter").toInt(); i++) {
-    if (server.arg("ssid" + String(i)).length() > 0) {
-      file.print(server.arg("ssid" + String(i)));
+  for (int i = 0; i < counter; i++) {
+    String ssidArg = server.arg("ssid" + String(i));
+    String passArg = server.arg("pass" + String(i));
+    if (ssidArg.length() > 0) {
+      if (!isSafeWifiField(ssidArg, 32) || !isSafeWifiField(passArg, 63)) {
+        file.close();
+        server.send(400, "text/plain", "Error: invalid WiFi input");
+        return;
+      }
+      file.print(ssidArg);
       file.print("\t");
-      file.print(server.arg("pass" + String(i)));
+      file.print(passArg);
       file.print("\n");
     }
   }
   // Add new
-  if (server.arg("ssid").length() > 0) {
-    file.print(server.arg("ssid"));
+  String newSsid = server.arg("ssid");
+  String newPass = server.arg("pass");
+  if (newSsid.length() > 0) {
+    if (!isSafeWifiField(newSsid, 32) || !isSafeWifiField(newPass, 63)) {
+      file.close();
+      server.send(400, "text/plain", "Error: invalid WiFi input");
+      return;
+    }
+    file.print(newSsid);
     file.print("\t");
-    file.print(server.arg("pass"));
+    file.print(newPass);
     file.print("\n");
   }
   file.close();
@@ -816,6 +1029,11 @@ void httpSensors() {
 void httpSaveSensors() {
   portal_timer = millis();
   String html;
+  int counter = server.arg("counter").toInt();
+  if (counter < 0 || counter > MAX_SENSOR_ROWS) {
+    server.send(400, "text/plain", "Error: invalid counter");
+    return;
+  }
 
   file = SPIFFS.open("/known_sensors.txt", FILE_WRITE);
   if (!file) {
@@ -824,12 +1042,19 @@ void httpSaveSensors() {
     return;
   }
 
-  for (int i = 0; i < server.arg("counter").toInt(); i++) {
-    if (server.arg("sname" + String(i)).length() > 0) {
-      float cal = server.arg("scal" + String(i)).toFloat();
+  for (int i = 0; i < counter; i++) {
+    String nameArg = server.arg("sname" + String(i));
+    if (nameArg.length() > 0) {
+      String addrArg = server.arg("saddr" + String(i));
+      float cal = 0.0;
+      if (!isHexAddress16(addrArg) || !isSafeSensorName(nameArg) || !parseCalibrationValue(server.arg("scal" + String(i)), cal)) {
+        file.close();
+        server.send(400, "text/plain", "Error: invalid sensor input");
+        return;
+      }
       file.printf("%s\t%s\t%.6f\n",
-                  server.arg("saddr" + String(i)).c_str(),
-                  server.arg("sname" + String(i)).c_str(),
+                  addrArg.c_str(),
+                  nameArg.c_str(),
                   cal);
     }
   }
@@ -881,8 +1106,9 @@ void httpCalibrateSensors() {
   }
 
   int counter = server.arg("counter").toInt();
-  if (counter > MAX_SENSOR_ROWS) {
-    counter = MAX_SENSOR_ROWS;
+  if (counter < 0 || counter > MAX_SENSOR_ROWS) {
+    server.send(400, "text/plain", "Error: invalid counter");
+    return;
   }
 
   for (int i = 0; i < counter; i++) {
@@ -895,6 +1121,11 @@ void httpCalibrateSensors() {
     if (addrArg.length() == 0 || calibrationRowCount >= MAX_SENSOR_ROWS) {
       continue;
     }
+    float cal = 0.0;
+    if (!isHexAddress16(addrArg) || !isSafeSensorName(nameArg) || !parseCalibrationValue(server.arg("scal" + String(i)), cal)) {
+      server.send(400, "text/plain", "Error: invalid calibration input");
+      return;
+    }
 
     int row = calibrationRowCount;
     calibrationRowCount++;
@@ -903,7 +1134,7 @@ void httpCalibrateSensors() {
     calibrationRowAddr[row][sizeof(calibrationRowAddr[row]) - 1] = '\0';
     strncpy(calibrationRowName[row], nameArg.c_str(), sizeof(calibrationRowName[row]) - 1);
     calibrationRowName[row][sizeof(calibrationRowName[row]) - 1] = '\0';
-    calibrationRowCal[row] = server.arg("scal" + String(i)).toFloat();
+    calibrationRowCal[row] = cal;
 
     int idx = getSensorIndex(addrArg.c_str());
     calibrationRowSensorIdx[row] = idx;
@@ -1036,6 +1267,25 @@ void httpMQTT() {
 void httpSaveMQTT() {
   portal_timer = millis();
   String html;
+  String hostPortArg = server.arg("hostport");
+  String userPassArg = server.arg("userpass");
+  String topicBaseArg = server.arg("topicbase");
+  String hostnameArg = server.arg("myhostname");
+  String intervalArg = server.arg("interval");
+  String host;
+  String user;
+  String pass;
+  int parsedPort = 0;
+  int parsedInterval = 0;
+
+  if (!parseHostPortArg(hostPortArg, host, parsedPort) ||
+      !parseUserPassArg(userPassArg, user, pass) ||
+      !isSafeTopicBase(topicBaseArg) ||
+      !isSafeHostname(hostnameArg) ||
+      !parseIntervalArg(intervalArg, parsedInterval)) {
+    server.send(400, "text/plain", "Error: invalid MQTT input");
+    return;
+  }
 
   file = SPIFFS.open("/mqtt.txt", FILE_WRITE);
   if (!file) {
@@ -1044,11 +1294,11 @@ void httpSaveMQTT() {
     return;
   }
 
-  file.printf("%s\n", server.arg("hostport").c_str());
-  file.printf("%s\n", server.arg("userpass").c_str());
-  file.printf("%s\n", server.arg("topicbase").c_str());
-  file.printf("%s\n", server.arg("myhostname").c_str());
-  file.printf("%s\n", server.arg("interval").c_str());
+  file.printf("%s:%d\n", host.c_str(), parsedPort);
+  file.printf("%s:%s\n", user.c_str(), pass.c_str());
+  file.printf("%s\n", topicBaseArg.c_str());
+  file.printf("%s\n", hostnameArg.c_str());
+  file.printf("%d\n", parsedInterval);
   file.close();
 
   loadMQTT();  // reread
