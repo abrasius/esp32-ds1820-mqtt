@@ -401,6 +401,11 @@ void sensorMqttTask(void *parameter) {
       }
 
       if (sread == 1) {
+        if (calibrationActive) {
+          sread = 0;
+          continue;
+        }
+
         // send MQTT
         WiFi.mode(WIFI_STA);
 
